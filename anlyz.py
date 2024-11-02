@@ -71,13 +71,14 @@ def analyze_folder(folder_path):
     structure = []
 
     global_ignore_patterns = read_ignore_file(folder_path, '.repodocignore')
+    top_gitignore_patterns = read_gitignore_setting(folder_path)
 
     for root, dirs, files in os.walk(folder_path):
         # Ignore .git folders
         dirs[:] = [d for d in dirs if d != '.git']
-        ignore_patterns = read_gitignore_setting(root) + global_ignore_patterns
-        filtered_dirs = [d for d in dirs if not should_ignore(os.path.join(root, d), ignore_patterns)]
-        filtered_files = [f for f in files if not should_ignore(os.path.join(root, f), ignore_patterns)]
+        ignore_patterns = read_gitignore_setting(root) + global_ignore_patterns + top_gitignore_patterns
+        filtered_dirs = [d for d in dirs if not should_ignore(os.path.relpath(os.path.join(root, d), folder_path), ignore_patterns)]
+        filtered_files = [f for f in files if not should_ignore(os.path.relpath(os.path.join(root, f), folder_path), ignore_patterns)]
 
         if filtered_dirs or filtered_files:
             structure.append((root, filtered_dirs, filtered_files, [], []))
@@ -171,7 +172,7 @@ def gpt_analyze(structure, structure_text):
     total_output_tokens = 0
     flag_yesall = False
 
-    llm = ChatOpenAI(model_name="gpt-3.5-turbo", temperature=0.7, openai_api_key=openai_api_key)
+    llm = ChatOpenAI(model_name="gpt-4o", temperature=0.7, openai_api_key=openai_api_key)
 
     for root, dirs, files, analyses, modified_time in structure:
         for index, file in enumerate(files):
