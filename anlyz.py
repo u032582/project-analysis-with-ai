@@ -107,18 +107,9 @@ def format_structure(structure):
     for root, dirs, files, analyses, modified_time in structure:
         indent_level = root.count(os.sep)
         indent = ' ' * 4 * indent_level
-        lines.append(f"{indent}{os.path.basename(root)}/")
+        lines.append(f"\n{indent}{os.path.basename(root)}/")
         for index, f in enumerate(files):
             lines.append(f"{indent}    {f}")
-            if index < len(analyses) and analyses[index]:
-                analysis = analyses[index]
-                if isinstance(analysis, str) and analysis == "NOT_ANALYZED":
-                    lines.append(f"{indent}    ※解析対象外\n")
-                elif isinstance(analysis, dict):
-                    file_type = analysis.get('file_type', '---')
-                    description = analysis.get('description', '---')
-                    lines.append(f"{indent}    {file_type}")
-                    lines.append(f"{indent}    {description}\n")
     return '\n'.join(lines)
 
 def write_stats_to_file(stats, filename):
@@ -177,7 +168,7 @@ def gpt_analyze(structure, structure_text):
     for root, dirs, files, analyses, modified_time in structure:
         for index, file in enumerate(files):
             file_path = os.path.join(root, file)
-            logger.info(f"Analyzing file: {file_path}")
+            #logger.info(f"Analyzing file: {file_path}")
             try:
                 last_modified_time = time.ctime(os.path.getmtime(file_path))
 
