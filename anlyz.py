@@ -3,10 +3,9 @@ import fnmatch
 import json
 import time
 import logging
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel
 from langchain_community.chat_models import ChatOpenAI
 from dotenv import load_dotenv
-
 
 # 環境変数を読み込む
 load_dotenv()
@@ -20,16 +19,11 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 class FileContent(BaseModel):
-    content: str
-    additional_kwargs: dict
-    response_metadata: dict
     type: str
-    name: str | None = None
-    id: str
-    example: bool = False
-    tool_calls: list = []
-    invalid_tool_calls: list = []
-    usage_metadata: dict | None = None
+    file_type: str
+    description: str
+    references: list[str]
+    entry_points: list[str]
 
 def read_ignore_file(folder_path, filename):
     """
@@ -72,12 +66,15 @@ def analyze_folder(folder_path):
 
     global_ignore_patterns = read_ignore_file(folder_path, '.repodocignore')
 
+    # Read .gitignore from the top of the directory
+    top_gitignore_patterns = read_gitignore_setting(folder_path)
+
     for root, dirs, files in os.walk(folder_path):
         # Ignore .git folders
         dirs[:] = [d for d in dirs if d != '.git']
-        ignore_patterns = read_gitignore_setting(root) + global_ignore_patterns
-        filtered_dirs = [d for d in dirs if not should_ignore(os.path.join(root, d), ignore_patterns)]
-        filtered_files = [f for f in files if not should_ignore(os.path.join(root, f), ignore_patterns)]
+        ignore_patterns = read_gitignore_setting(root) + global_ignore_patterns + top_gitignore_patterns
+        filtered_dirs = [d for d in dirs if not should_ignore(os.path.relpath(os.path.join(root, d), folder_path), ignore_patterns)]
+        filtered_files = [f for f in files if not should_ignore(os.path.relpath(os.path.join(root, f), folder_path), ignore_patterns)]
 
         if filtered_dirs or filtered_files:
             structure.append((root, filtered_dirs, filtered_files, [], []))
@@ -111,9 +108,9 @@ def format_structure(structure):
             lines.append(f"{indent}    {f}")
             if index < len(analyses) and analyses[index]:
                 analysis = analyses[index]
-                if isinstance(analysis, str) and analysis == "NOT_ANALYZED":
+                if analysis == "NOT_ANALYZED":
                     lines.append(f"{indent}    ※解析対象外\n")
-                elif isinstance(analysis, dict):
+                else:
                     file_type = analysis.get('file_type', '---')
                     description = analysis.get('description', '---')
                     lines.append(f"{indent}    {file_type}")
@@ -137,14 +134,6 @@ def load_stats_file(filename):
     else:
         logger.error(f"No saved stats file found at {filename}")
         return None
-
-def get_token_count(content: str) -> int:
-    """
-    Calculates the number of tokens in the given content.
-    This is a placeholder function. You should replace it with the actual implementation.
-    """
-    # Placeholder implementation: count words as tokens
-    return len(content.split())
 
 def estimate_cost_for_gpt4o_0806(input_tokens: int, output_tokens: int) -> float:
     """
@@ -171,7 +160,7 @@ def gpt_analyze(structure, structure_text):
     total_output_tokens = 0
     flag_yesall = False
 
-    llm = ChatOpenAI(model_name="gpt-3.5-turbo", temperature=0.7, openai_api_key=openai_api_key)
+    llm = ChatOpenAI(model_name="gpt-4o", temperature=0.7, api_key=openai_api_key)
 
     for root, dirs, files, analyses, modified_time in structure:
         for index, file in enumerate(files):
@@ -228,48 +217,28 @@ And please add appropriate bullet points and line breaks to make it easier to re
                             {"role": "user", "content": user_prompt},
                         ]
 
-                        try:
-                            response = llm.invoke(messages)
-                            logger.info(f"Analysis response: {json.dumps(response.model_dump(), indent=4, ensure_ascii=False)}")
-                            if response:
-                                result = FileContent.model_validate(response.model_dump())
-                                if result:
-                                    input_tokens = response.response_metadata['token_usage']['prompt_tokens']
-                                    output_tokens = response.response_metadata['token_usage']['completion_tokens']
-                                    total_input_tokens += input_tokens
-                                    total_output_tokens += output_tokens
+                        response = llm(messages)
+                        result = FileContent.parse_raw(response['choices'][0]['message']['content'])
+                        input_tokens = len(response['usage']['prompt_tokens'])
+                        output_tokens = len(response['usage']['completion_tokens'])
+                        total_input_tokens += input_tokens
+                        total_output_tokens += output_tokens
 
-                                    for item in structure:
-                                        if item[0] == root:
-                                            item[3].append(result.dict())
-                                            item[4].append(last_modified_time)
-                                else:
-                                    logger.error(f"Validation error while parsing response for {file_path}: Response: {json.dumps(response, indent=4, ensure_ascii=False)}")
-                                    for item in structure:
-                                        if item[0] == root:
-                                            item[3].append("PARSE_ERROR")
-                                            item[4].append(last_modified_time)
-                            else:
-                                logger.error(f"Unexpected response format from LLM: {response}")
-                                for item in structure:
-                                    if item[0] == root:
-                                        item[3].append("FILE_READ_ERROR")
-                                        item[4].append(last_modified_time)
-                        except Exception as e:
-                            logger.error(f"LLM invocation failed for {file_path}: {e}")
-                            for item in structure:
-                                if item[0] == root:
-                                    item[3].append("LLM_INVOCATION_ERROR")
-                                    item[4].append(last_modified_time)
-                            raise
-                        
+                        for item in structure:
+                            if item[0] == root:
+                                item[3].append(result.dict())
+                                item[4].append(last_modified_time)
+                    else:
+                        logger.info(f"Skipping {file_path}")
+                        for item in structure:
+                            if item[0] == root:
+                                item[3].append("NOT_ANALYZED")
+                                item[4].append(last_modified_time)
             except Exception as e:
                 logger.error(f"Could not read {file_path}: {e}")
                 for item in structure:
                     if item[0] == root:
                         item[3].append("FILE_READ_ERROR")
-                        item[4].append(last_modified_time)
-                raise
 
     logger.info(f"Total input tokens: {total_input_tokens}")
     logger.info(f"Total output tokens: {total_output_tokens}")
